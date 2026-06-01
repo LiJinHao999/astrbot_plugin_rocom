@@ -71,6 +71,14 @@ class RocomScraper:
                     if not name:
                         continue
                     
+                    icon_url = ""
+                    try:
+                        pic_elem = await goods.query_selector('.goods-row__pic img')
+                        if pic_elem:
+                            icon_url = await pic_elem.get_attribute('src') or ""
+                    except:
+                        pass
+                    
                     price_elem = await goods.query_selector('.goods-row__price span')
                     price_text = (await price_elem.text_content()).strip() if price_elem else "0"
                     price = int(price_text.replace(',', '').replace('W', '0000')) if price_text else 0
@@ -92,7 +100,7 @@ class RocomScraper:
                         "limit": limit,
                         "is_active": is_active,
                         "is_rare": is_rare,
-                        "icon": ""
+                        "icon_url": icon_url
                     }
                     goods_list.append(item)
                     
