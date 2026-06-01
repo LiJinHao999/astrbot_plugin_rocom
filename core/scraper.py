@@ -67,12 +67,12 @@ class RocomScraper:
                     button_text = (await button.text_content() or "").strip()
                     logger.info(f"[Rocom Scraper] 点击时间段按钮: {button_text}")
                     await button.click()
-                    await page.wait_for_timeout(1000)
+                    await page.wait_for_timeout(2000)
                     
-                    goods_elements = await page.query_selector_all('.goods-row')
-                    logger.info(f"[Rocom Scraper] 时间段 {button_text} 找到 {len(goods_elements)} 个商品")
+                    visible_goods = await page.query_selector_all('.goods-list-box:not([style*="display: none"]) .goods-row')
+                    logger.info(f"[Rocom Scraper] 时间段 {button_text} 找到 {len(visible_goods)} 个可见商品")
                     
-                    for goods in goods_elements:
+                    for goods in visible_goods:
                         try:
                             name_elem = await goods.query_selector('.goods-row__name')
                             if not name_elem:
