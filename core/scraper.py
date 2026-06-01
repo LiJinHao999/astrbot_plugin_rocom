@@ -156,28 +156,57 @@ class RocomScraper:
                     if not name:
                         continue
                     
-                    activity = {'name': name}
+                    full_text = (await card.text_content() or "").strip()
                     
-                    time_elem = await card.query_selector('.hd-card__time')
-                    activity['time_remaining'] = (await time_elem.text_content()).strip() if time_elem else None
+                    import re
+                    date_match = re.search(r'活动时间[：:]\s*(\d+月\d+日.*?~.*?\d+月\d+日.*?)(?:\n|活动相关|$)', full_text)
+                    date_range = date_match.group(1).strip() if date_match else ""
                     
-                    date_elem = await card.query_selector('.hd-card__date')
-                    activity['date_range'] = (await date_elem.text_content()).strip() if date_elem else None
+                    start_date, end_date = None, None
+                    if date_range:
+                        from datetime import datetime
+                        parts = date_range.split('~')
+                        if len(parts) == 2:
+                            start_str = parts[0].strip()
+                            end_str = parts[1].strip()
+                            
+                            year = datetime.now().year
+                            try:
+                                start_match = re.match(r'(\d+)月(\d+)日(?:\s+(\d+):(\d+))?', start_str)
+                                if start_match:
+                                    month, day = int(start_match.group(1)), int(start_match.group(2))
+                                    hour = int(start_match.group(3)) if start_match.group(3) else 0
+                                    minute = int(start_match.group(4)) if start_match.group(4) else 0
+                                    start_date = datetime(year, month, day, hour, minute)
+                                    start_date = int(start_date.timestamp())
+                                
+                                end_match = re.match(r'(\d+)月(\d+)日(?:\s+(\d+):(\d+))?', end_str)
+                                if end_match:
+                                    month, day = int(end_match.group(1)), int(end_match.group(2))
+                                    hour = int(end_match.group(3)) if end_match.group(3) else 23
+                                    minute = int(end_match.group(4)) if end_match.group(4) else 59
+                                    end_date = datetime(year, month, day, hour, minute)
+                                    end_date = int(end_date.timestamp())
+                            except:
+                                pass
                     
-                    item_elements = await card.query_selector_all('.hd-card__related-item')
-                    related_items = []
-                    for item in item_elements:
-                        item_text = (await item.text_content() or "").strip()
-                        if item_text:
-                            related_items.append(item_text)
-                    activity['related_items'] = related_items
+                    if not start_date or not end_date:
+                        continue
+                    
+                    activity = {
+                        'name': name,
+                        'start_time': start_date,
+                        'end_time': end_date,
+                        'start_date': date_range.split('~')[0].strip() if '~' in date_range else '',
+                        'end_date': date_range.split('~')[1].strip() if '~' in date_range else ''
+                    }
                     
                     activities.append(activity)
                 except Exception as e:
                     logger.warning(f"[Rocom Scraper] 提取单个活动失败: {e}")
                     continue
             
-            logger.info(f"[Rocom Scraper] 成功提取 {len(activities)} 个活动")
+            logger.info(f"[Rocom Scraper] 成功提取 {len(activities)} 个有效活动")
             return {'activities': activities}
             
         except PlaywrightTimeout as e:

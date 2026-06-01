@@ -701,13 +701,19 @@ class RocomClient:
         )
 
     async def get_activities_info(self, refresh: bool = False) -> Optional[Dict]:
-        """Query RoCom activities and calendar data."""
-        params = {"refresh": "true" if refresh else "false"}
-        return await self._get(
-            "/api/v1/games/rocom/activities/info",
-            self._wegame_headers(),
-            params=params,
-        )
+        """Query RoCom activities and calendar data using scraper."""
+        try:
+            logger.info("[Rocom] 使用爬虫获取活动日历信息")
+            result = await self.scraper.get_activities_info()
+            if result:
+                return result
+            else:
+                self._set_last_error("爬取活动信息失败")
+                return None
+        except Exception as e:
+            logger.error(f"[Rocom] 爬取活动信息异常: {e}")
+            self._set_last_error(f"爬取异常: {e}")
+            return None
 
     async def search_wiki_pet(self, query: str, limit: int = 10) -> Optional[Dict]:
         """Search pet wiki entries."""
