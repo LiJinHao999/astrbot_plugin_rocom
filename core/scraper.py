@@ -71,35 +71,46 @@ class RocomScraper:
                     if not name:
                         continue
                     
-                    item = {'name': name}
-                    
                     price_elem = await goods.query_selector('.goods-row__price span')
-                    item['price'] = (await price_elem.text_content()).strip() if price_elem else None
+                    price_text = (await price_elem.text_content()).strip() if price_elem else "0"
+                    price = int(price_text.replace(',', '').replace('W', '0000')) if price_text else 0
                     
                     limit_elem = await goods.query_selector('.goods-row__limit')
-                    item['limit'] = (await limit_elem.text_content()).strip() if limit_elem else None
+                    limit_text = (await limit_elem.text_content()).strip() if limit_elem else ""
+                    limit = int(''.join(filter(str.isdigit, limit_text))) if limit_text else 0
                     
                     countdown_elem = await goods.query_selector('.goods-countdown')
-                    item['countdown'] = (await countdown_elem.text_content()).strip() if countdown_elem else None
-                    
-                    tag_elements = await goods.query_selector_all('.goods-row__tags .span-item i')
-                    tags = []
-                    for tag in tag_elements:
-                        tag_text = (await tag.text_content() or "").strip()
-                        if tag_text:
-                            tags.append(tag_text)
-                    item['tags'] = tags
+                    countdown = (await countdown_elem.text_content()).strip() if countdown_elem else ""
+                    is_active = countdown and "已结束" not in countdown
                     
                     rare_elem = await goods.query_selector('.goods-row__rare')
-                    item['is_rare'] = rare_elem is not None
+                    is_rare = rare_elem is not None
                     
+                    item = {
+                        "name": name,
+                        "price": price,
+                        "limit": limit,
+                        "is_active": is_active,
+                        "is_rare": is_rare,
+                        "icon": ""
+                    }
                     goods_list.append(item)
+                    
                 except Exception as e:
                     logger.warning(f"[Rocom Scraper] 提取单个商品失败: {e}")
                     continue
             
-            logger.info(f"[Rocom Scraper] 成功提取 {len(goods_list)} 个商品")
-            return {'goods': goods_list}
+            logger.info(f"[Rocom Scraper] 成功提取 {len(goods_list)} 个有效商品")
+            
+            return {
+                "merchantActivities": [{
+                    "name": "远行商人",
+                    "get_props": goods_list,
+                    "get_extra_props": [],
+                    "get_pets": []
+                }],
+                "random_goods": []
+            }
             
         except PlaywrightTimeout as e:
             logger.error(f"[Rocom Scraper] 页面加载超时: {e}")
