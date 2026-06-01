@@ -88,5 +88,17 @@
     "description": "洛克公告订阅检查间隔",
     "hint": "单位：分钟。用于新公告订阅轮询",
     "default": 10
+  },
+  "activity_notification_enabled": {
+    "type": "bool",
+    "description": "启用活动开始/结束通知",
+    "hint": "开启后会在每天指定时间检查今天开始和结束的活动并推送通知（需要先订阅）",
+    "default": false
+  },
+  "activity_notification_time": {
+    "type": "string",
+    "description": "活动通知时间",
+    "hint": "每天检查活动的时间点（24 小时制，格式：HH:MM）",
+    "default": "08:00"
   }
 }

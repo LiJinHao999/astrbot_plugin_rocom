@@ -21,6 +21,7 @@ from .core.user import (
     MerchantSubscriptionManager,
     HomeSubscriptionManager,
     AnnouncementSubscriptionManager,
+    ActivitySubscriptionManager,
 )
 from .core.render import Renderer
 from .core.egg_service import EggService, SearchResult
@@ -43,6 +44,7 @@ class RocomPlugin(Star):
         self.merchant_sub_mgr = MerchantSubscriptionManager(data_dir)
         self.home_sub_mgr = HomeSubscriptionManager(data_dir)
         self.announcement_sub_mgr = AnnouncementSubscriptionManager(data_dir)
+        self.activity_sub_mgr = ActivitySubscriptionManager(data_dir)
         
         render_timeout = self.config.get("render_timeout", 30000)
         self.help_prefix_display = str(self.config.get("help_prefix_display", "") or "")
@@ -94,6 +96,11 @@ class RocomPlugin(Star):
             self.announcement_poll_interval_minutes = 10
         self._announcement_subscription_task = None
         
+        # 活动通知配置
+        self.activity_notification_enabled = self.config.get("activity_notification_enabled", False)
+        self.activity_notification_time = self.config.get("activity_notification_time", "08:00")
+        self._activity_notification_task = None
+        
         # 启动时检查是否需要开启自动刷新
         logger.info(f"[Rocom] 插件初始化完成，自动刷新启用状态：{self.auto_refresh_enabled}, 刷新时间：{self.auto_refresh_time}, 通知群：{self.auto_refresh_notify_group}")
         if self.auto_refresh_enabled:
@@ -114,8 +121,18 @@ class RocomPlugin(Star):
             self._announcement_subscription_task = asyncio.create_task(
                 self._announcement_subscription_loop()
             )
+        if self.activity_notification_enabled:
+            self._activity_notification_task = asyncio.create_task(
+                self._activity_notification_loop()
+            )
 
     async def terminate(self):
+        if self._activity_notification_task and not self._activity_notification_task.done():
+            self._activity_notification_task.cancel()
+            try:
+                await self._activity_notification_task
+            except asyncio.CancelledError:
+                pass
         if self._announcement_subscription_task and not self._announcement_subscription_task.done():
             self._announcement_subscription_task.cancel()
             try:
@@ -3622,6 +3639,51 @@ class RocomPlugin(Star):
         else:
             yield event.plain_result("当前会话没有洛克公告订阅。")
 
+    @filter.command("订阅洛克活动")
+    async def subscribe_activity(self, event: AstrMessageEvent):
+        """订阅洛克王国活动开始/结束提醒"""
+        if not event.is_private_chat() and not await self._is_group_admin(event):
+            yield event.plain_result("仅当前群管理员可以配置洛克活动订阅。")
+            return
+        key = str(event.unified_msg_origin)
+        await self.activity_sub_mgr.upsert_subscription(
+            key,
+            {
+                "key": key,
+                "umo": event.unified_msg_origin,
+                "updated_by": str(event.get_sender_id()),
+                "updated_at": int(time.time()),
+            },
+        )
+        yield event.plain_result(f"已订阅洛克活动通知，每天 {self.activity_notification_time} 会推送今日开始/结束的活动。")
+
+    @filter.command("取消订阅洛克活动")
+    async def unsubscribe_activity(self, event: AstrMessageEvent):
+        """取消洛克王国活动提醒"""
+        if not event.is_private_chat() and not await self._is_group_admin(event):
+            yield event.plain_result("仅当前群管理员可以取消洛克活动订阅。")
+            return
+        key = str(event.unified_msg_origin)
+        deleted = await self.activity_sub_mgr.delete_subscription(key)
+        if deleted:
+            yield event.plain_result("已取消当前会话的洛克活动订阅。")
+        else:
+            yield event.plain_result("当前会话没有洛克活动订阅。")
+
+    @filter.command("洛克活动通知测试")
+    async def test_activity_notification(self, event: AstrMessageEvent):
+        """测试活动通知功能"""
+        if not event.is_private_chat() and not await self._is_group_admin(event):
+            yield event.plain_result("仅当前群管理员可以测试活动通知。")
+            return
+        
+        yield event.plain_result("正在测试活动通知功能...")
+        try:
+            await self._check_activity_notifications()
+            yield event.plain_result("✅ 活动通知测试完成，如有今日开始/结束的活动已发送通知。")
+        except Exception as e:
+            yield event.plain_result(f"❌ 活动通知测试失败：{e}")
+
     @filter.command("远行商人", alias={"yxsr"})
     async def rocom_merchant(self, event: AstrMessageEvent):
         """查询远行商人"""
@@ -4461,3 +4523,81 @@ class RocomPlugin(Star):
         except Exception as e:
             logger.error(f"[Rocom] 配种判定渲染异常: {e}")
             yield event.plain_result(f"配种判定功能异常：{e}")
+
+    async def _activity_notification_loop(self):
+        """活动通知循环任务"""
+        logger.info("[Rocom] 活动通知循环任务已启动")
+        last_check_date = None
+        
+        while True:
+            try:
+                now = datetime.now(self._cn_tz())
+                current_time = f"{now.hour:02d}:{now.minute:02d}"
+                current_date = now.strftime("%Y-%m-%d")
+                
+                if current_time == self.activity_notification_time and last_check_date != current_date:
+                    logger.info(f"[Rocom] 活动通知检查时间到达: {current_time}")
+                    await self._check_activity_notifications()
+                    last_check_date = current_date
+                
+                await asyncio.sleep(60)
+                
+            except asyncio.CancelledError:
+                logger.info("[Rocom] 活动通知任务已取消")
+                break
+            except Exception as e:
+                logger.error(f"[Rocom] 活动通知循环异常: {e}")
+                await asyncio.sleep(60)
+
+    async def _check_activity_notifications(self):
+        """检查并发送活动通知"""
+        all_subs = await self.activity_sub_mgr.get_all_subscriptions()
+        if not all_subs:
+            return
+        
+        try:
+            from .core.scraper import RocomScraper
+            scraper = RocomScraper()
+            activities_data = await scraper.get_activities_info()
+            await scraper.close()
+            
+            if not activities_data or not activities_data.get('activities'):
+                return
+            
+            activities = activities_data['activities']
+            now = datetime.now(self._cn_tz())
+            today_start = datetime.combine(now.date(), datetime.min.time(), tzinfo=self._cn_tz())
+            today_end = datetime.combine(now.date(), datetime.max.time(), tzinfo=self._cn_tz())
+            today_start_ts = int(today_start.timestamp())
+            today_end_ts = int(today_end.timestamp())
+            
+            starting_today = [a for a in activities if today_start_ts <= a.get('start_time', 0) <= today_end_ts]
+            ending_today = [a for a in activities if today_start_ts <= a.get('end_time', 0) <= today_end_ts]
+            
+            if not starting_today and not ending_today:
+                return
+            
+            message = "【洛克王国活动提醒】\n\n"
+            if starting_today:
+                message += "🎉 今日开始的活动：\n"
+                for act in starting_today:
+                    message += f"• {act['name']}\n"
+                    if act.get('rewards'):
+                        message += f"  奖励：{act['rewards']}\n"
+                message += "\n"
+            
+            if ending_today:
+                message += "⏰ 今日结束的活动：\n"
+                for act in ending_today:
+                    message += f"• {act['name']}\n"
+                    if act.get('rewards'):
+                        message += f"  奖励：{act['rewards']}\n"
+            
+            for umo in all_subs.keys():
+                try:
+                    await self.context.send_message(umo, MessageChain().message(message))
+                except Exception as e:
+                    logger.error(f"[Rocom] 发送活动通知到 {umo} 失败: {e}")
+                    
+        except Exception as e:
+            logger.error(f"[Rocom] 检查活动通知失败: {e}")

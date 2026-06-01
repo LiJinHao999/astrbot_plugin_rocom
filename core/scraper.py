@@ -233,12 +233,18 @@ class RocomScraper:
                     if not start_date or not end_date:
                         continue
                     
+                    rewards = ""
+                    reward_match = re.search(r'活动相关[：:]\s*(.+?)(?:\n|$)', full_text)
+                    if reward_match:
+                        rewards = reward_match.group(1).strip()
+                    
                     activity = {
                         'name': name,
                         'start_time': start_date,
                         'end_time': end_date,
                         'start_date': date_range.split('~')[0].strip() if '~' in date_range else '',
-                        'end_date': date_range.split('~')[1].strip() if '~' in date_range else ''
+                        'end_date': date_range.split('~')[1].strip() if '~' in date_range else '',
+                        'rewards': rewards
                     }
                     
                     activities.append(activity)
