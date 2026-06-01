@@ -4571,8 +4571,12 @@ class RocomPlugin(Star):
             today_start_ts = int(today_start.timestamp())
             today_end_ts = int(today_end.timestamp())
             
+            tomorrow_start = today_start + timedelta(days=1)
+            tomorrow_morning_6am = datetime.combine(tomorrow_start.date(), datetime.min.time(), tzinfo=self._cn_tz()) + timedelta(hours=6)
+            tomorrow_morning_6am_ts = int(tomorrow_morning_6am.timestamp())
+            
             starting_today = [a for a in activities if today_start_ts <= a.get('start_time', 0) <= today_end_ts]
-            ending_today = [a for a in activities if today_start_ts <= a.get('end_time', 0) <= today_end_ts]
+            ending_today = [a for a in activities if today_start_ts <= a.get('end_time', 0) <= tomorrow_morning_6am_ts]
             
             if not starting_today and not ending_today:
                 return
