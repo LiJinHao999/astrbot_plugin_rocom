@@ -58,62 +58,77 @@ class RocomScraper:
             await page.wait_for_timeout(3000)
             logger.info("[Rocom Scraper] 页面加载完成")
             
-            goods_elements = await page.query_selector_all('.goods-row')
-            logger.info(f"[Rocom Scraper] 找到 {len(goods_elements)} 个商品元素")
+            time_slot_buttons = await page.query_selector_all('.time-slot-btn')
+            logger.info(f"[Rocom Scraper] 找到 {len(time_slot_buttons)} 个时间段按钮")
             
-            goods_list = []
-            for goods in goods_elements:
+            all_goods = []
+            for i, button in enumerate(time_slot_buttons):
                 try:
-                    name_elem = await goods.query_selector('.goods-row__name')
-                    if not name_elem:
-                        continue
-                    name = (await name_elem.text_content() or "").strip()
-                    if not name:
-                        continue
+                    button_text = (await button.text_content() or "").strip()
+                    logger.info(f"[Rocom Scraper] 点击时间段按钮: {button_text}")
+                    await button.click()
+                    await page.wait_for_timeout(1000)
                     
-                    icon_url = ""
-                    try:
-                        pic_elem = await goods.query_selector('.goods-row__pic img')
-                        if pic_elem:
-                            icon_url = await pic_elem.get_attribute('src') or ""
-                    except:
-                        pass
+                    goods_elements = await page.query_selector_all('.goods-row')
+                    logger.info(f"[Rocom Scraper] 时间段 {button_text} 找到 {len(goods_elements)} 个商品")
                     
-                    price_elem = await goods.query_selector('.goods-row__price span')
-                    price_text = (await price_elem.text_content()).strip() if price_elem else "0"
-                    price = int(price_text.replace(',', '').replace('W', '0000')) if price_text else 0
-                    
-                    limit_elem = await goods.query_selector('.goods-row__limit')
-                    limit_text = (await limit_elem.text_content()).strip() if limit_elem else ""
-                    limit = int(''.join(filter(str.isdigit, limit_text))) if limit_text else 0
-                    
-                    countdown_elem = await goods.query_selector('.goods-countdown')
-                    countdown = (await countdown_elem.text_content()).strip() if countdown_elem else ""
-                    is_active = countdown and "已结束" not in countdown
-                    
-                    rare_elem = await goods.query_selector('.goods-row__rare')
-                    is_rare = rare_elem is not None
-                    
-                    item = {
-                        "name": name,
-                        "price": price,
-                        "limit": limit,
-                        "is_active": is_active,
-                        "is_rare": is_rare,
-                        "icon_url": icon_url
-                    }
-                    goods_list.append(item)
-                    
+                    for goods in goods_elements:
+                        try:
+                            name_elem = await goods.query_selector('.goods-row__name')
+                            if not name_elem:
+                                continue
+                            name = (await name_elem.text_content() or "").strip()
+                            if not name:
+                                continue
+                            
+                            icon_url = ""
+                            try:
+                                pic_elem = await goods.query_selector('.goods-row__pic img')
+                                if pic_elem:
+                                    icon_url = await pic_elem.get_attribute('src') or ""
+                            except:
+                                pass
+                            
+                            price_elem = await goods.query_selector('.goods-row__price span')
+                            price_text = (await price_elem.text_content()).strip() if price_elem else "0"
+                            price = int(price_text.replace(',', '').replace('W', '0000')) if price_text else 0
+                            
+                            limit_elem = await goods.query_selector('.goods-row__limit')
+                            limit_text = (await limit_elem.text_content()).strip() if limit_elem else ""
+                            limit = int(''.join(filter(str.isdigit, limit_text))) if limit_text else 0
+                            
+                            countdown_elem = await goods.query_selector('.goods-countdown')
+                            countdown = (await countdown_elem.text_content()).strip() if countdown_elem else ""
+                            is_active = countdown and "已结束" not in countdown
+                            
+                            rare_elem = await goods.query_selector('.goods-row__rare')
+                            is_rare = rare_elem is not None
+                            
+                            item = {
+                                "name": name,
+                                "price": price,
+                                "limit": limit,
+                                "is_active": is_active,
+                                "is_rare": is_rare,
+                                "icon_url": icon_url,
+                                "time_slot": button_text
+                            }
+                            all_goods.append(item)
+                            
+                        except Exception as e:
+                            logger.warning(f"[Rocom Scraper] 提取单个商品失败: {e}")
+                            continue
+                            
                 except Exception as e:
-                    logger.warning(f"[Rocom Scraper] 提取单个商品失败: {e}")
+                    logger.warning(f"[Rocom Scraper] 处理时间段 {i+1} 失败: {e}")
                     continue
             
-            logger.info(f"[Rocom Scraper] 成功提取 {len(goods_list)} 个有效商品")
+            logger.info(f"[Rocom Scraper] 成功提取 {len(all_goods)} 个有效商品")
             
             return {
                 "merchantActivities": [{
                     "name": "远行商人",
-                    "get_props": goods_list,
+                    "get_props": all_goods,
                     "get_extra_props": [],
                     "get_pets": []
                 }],
