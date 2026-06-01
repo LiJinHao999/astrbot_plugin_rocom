@@ -67,7 +67,23 @@ class RocomScraper:
                     button_text = (await button.text_content() or "").strip()
                     logger.info(f"[Rocom Scraper] 点击时间段按钮: {button_text}")
                     await button.click()
-                    await page.wait_for_timeout(2000)
+                    await page.wait_for_timeout(1000)
+                    
+                    from datetime import datetime, time as dt_time, timezone, timedelta
+                    import re
+                    time_match = re.match(r'(\d+):(\d+)-(\d+):(\d+)', button_text)
+                    start_ts, end_ts = None, None
+                    if time_match:
+                        start_hour, start_min = int(time_match.group(1)), int(time_match.group(2))
+                        end_hour, end_min = int(time_match.group(3)), int(time_match.group(4))
+                        cn_tz = timezone(timedelta(hours=8))
+                        now = datetime.now(cn_tz)
+                        start_dt = datetime.combine(now.date(), dt_time(start_hour, start_min), tzinfo=cn_tz)
+                        end_dt = datetime.combine(now.date(), dt_time(end_hour, end_min), tzinfo=cn_tz)
+                        if end_hour == 0:
+                            end_dt += timedelta(days=1)
+                        start_ts = int(start_dt.timestamp() * 1000)
+                        end_ts = int(end_dt.timestamp() * 1000)
                     
                     visible_goods = await page.query_selector_all('.goods-list-box:not([style*="display: none"]) .goods-row')
                     logger.info(f"[Rocom Scraper] 时间段 {button_text} 找到 {len(visible_goods)} 个可见商品")
@@ -111,7 +127,8 @@ class RocomScraper:
                                 "is_active": is_active,
                                 "is_rare": is_rare,
                                 "icon_url": icon_url,
-                                "time_slot": button_text
+                                "start_time": start_ts,
+                                "end_time": end_ts
                             }
                             all_goods.append(item)
                             
