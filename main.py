@@ -845,11 +845,13 @@ class RocomPlugin(Star):
                             "next_retry_sec": retry_delay
                         })
                     else:
-                        # 超过重试次数，休眠5小时
+                        # 超过重试次数，休眠5小时，并重置retry_count给下次新机会
                         next_check = current_time + 5 * 3600
+                        retry_count = 0
                         self.scheduler_logger.log("api_error_max_retries", key, {
                             "uid": uid,
-                            "sleep_hours": 5
+                            "sleep_hours": 5,
+                            "retry_reset": True
                         })
                     
                     sub["retry_count"] = retry_count
@@ -887,10 +889,12 @@ class RocomPlugin(Star):
                         })
                     else:
                         next_check = current_time + 5 * 3600
+                        retry_count = 0
                         self.scheduler_logger.log("empty_data_max_retries", key, {
                             "kind": kind,
                             "uid": uid,
-                            "sleep_hours": 5
+                            "sleep_hours": 5,
+                            "retry_reset": True
                         })
                     
                     sub["retry_count"] = retry_count
