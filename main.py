@@ -25,6 +25,8 @@ from .core.user import (
 )
 from .core.render import Renderer
 from .core.egg_service import EggService, SearchResult
+from .core.scheduler import HomeScheduler
+from .core.scheduler_logger import SchedulerLogger
 
 @register("astrbot_plugin_rocom", "bvzrays & 熵增项目组", "洛克王国插件", "v3.3.0", "https://github.com/Entropy-Increase-Team/astrbot_plugin_rocom")
 class RocomPlugin(Star):
@@ -45,6 +47,7 @@ class RocomPlugin(Star):
         self.home_sub_mgr = HomeSubscriptionManager(data_dir)
         self.announcement_sub_mgr = AnnouncementSubscriptionManager(data_dir)
         self.activity_sub_mgr = ActivitySubscriptionManager(data_dir)
+        self.scheduler_logger = SchedulerLogger(data_dir)
         
         render_timeout = self.config.get("render_timeout", 30000)
         self.help_prefix_display = str(self.config.get("help_prefix_display", "") or "")
@@ -695,11 +698,25 @@ class RocomPlugin(Star):
         }
 
     async def _home_subscription_loop(self):
-        logger.info("[Rocom] 家园订阅循环任务已启动")
-        interval = max(1, int(self.home_subscription_interval_minutes or 5)) * 60
+        logger.info("[Rocom] 家园订阅循环任务已启动（智能调度模式）")
+        default_interval = max(1, int(self.home_subscription_interval_minutes or 5)) * 60
+        max_sleep = 3600
+        
         while True:
             try:
-                await asyncio.sleep(interval)
+                all_subs = await self.home_sub_mgr.get_all_subscriptions()
+                sleep_duration = HomeScheduler.calculate_sleep_duration(
+                    all_subs, 
+                    default_interval=default_interval,
+                    max_sleep=max_sleep
+                )
+                
+                next_wake = HomeScheduler.get_next_wake_time(all_subs)
+                if next_wake:
+                    wake_time_str = datetime.fromtimestamp(next_wake).strftime('%Y-%m-%d %H:%M:%S')
+                    logger.debug(f"[Rocom] 家园订阅下次检查时间: {wake_time_str}, sleep {sleep_duration}秒")
+                
+                await asyncio.sleep(sleep_duration)
                 await self._check_home_subscriptions()
             except asyncio.CancelledError:
                 raise
@@ -777,71 +794,172 @@ class RocomPlugin(Star):
         all_subs = await self.home_sub_mgr.get_all_subscriptions()
         if not all_subs:
             return
-        data_cache: Dict[str, Dict[str, Any] | None] = {}
+        
+        current_time = int(time.time())
+        
+        # 筛选需要检查的订阅
+        to_check = {}
         for key, sub in all_subs.items():
             uid = str(sub.get("uid", "") or "")
             kind = str(sub.get("kind", "") or "")
             if not uid or kind not in {"garden", "inspiration"}:
                 continue
-            if uid not in data_cache:
-                data_cache[uid] = await self.client.ingame_home_info(uid)
-                await asyncio.sleep(1)
+            if HomeScheduler.should_check_subscription(sub, current_time):
+                to_check[key] = sub
+        
+        if not to_check:
+            logger.debug("[Rocom] 无需检查的家园订阅")
+            return
+        
+        logger.info(f"[Rocom] 检查 {len(to_check)}/{len(all_subs)} 个到期的家园订阅")
+        
+        # 按 uid 分组，减少 API 调用
+        uid_groups: Dict[str, List[tuple[str, Dict[str, Any]]]] = {}
+        for key, sub in to_check.items():
+            uid = str(sub.get("uid", "") or "")
+            uid_groups.setdefault(uid, []).append((key, sub))
+        
+        # 批量查询（串行以避免 API 限制）
+        data_cache: Dict[str, Dict[str, Any] | None] = {}
+        for uid in uid_groups.keys():
+            data_cache[uid] = await self.client.ingame_home_info(uid)
+            await asyncio.sleep(0.5)
+        
+        # 处理每个订阅
+        for uid, subs_list in uid_groups.items():
             res = data_cache.get(uid)
+            
+            # API 失败或返回空：指数退避重试
             if not res:
-                continue
-            data = self._build_home_render_data(res, uid)
-            total_items, ready_items, _unit, names = self._home_subscription_state(data, kind)
-            total_count = len(total_items)
-            ready_count = len(ready_items)
-            if total_count <= 0:
-                continue
-
-            notify_state = sub.get("notify_state") if isinstance(sub.get("notify_state"), dict) else {}
-            changed = False
-            push_levels = []
-
-            if ready_count <= 0:
-                if notify_state.get("first") or notify_state.get("all"):
-                    notify_state["first"] = False
-                    notify_state["all"] = False
-                    changed = True
-            else:
-                if not notify_state.get("first"):
-                    push_levels.append("first")
-                if ready_count >= total_count and not notify_state.get("all"):
-                    push_levels.append("all")
-                elif ready_count < total_count and notify_state.get("all"):
-                    notify_state["all"] = False
-                    changed = True
-
-            if not push_levels:
-                if changed:
-                    sub["notify_state"] = notify_state
+                for key, sub in subs_list:
+                    retry_count = sub.get("retry_count", 0) + 1
+                    max_retries = 3
+                    
+                    if retry_count <= max_retries:
+                        # 指数退避：60s, 120s, 240s
+                        retry_delay = 60 * (2 ** (retry_count - 1))
+                        next_check = current_time + retry_delay
+                        self.scheduler_logger.log("api_error", key, {
+                            "uid": uid,
+                            "retry": retry_count,
+                            "next_retry_sec": retry_delay
+                        })
+                    else:
+                        # 超过重试次数，休眠5小时
+                        next_check = current_time + 5 * 3600
+                        self.scheduler_logger.log("api_error_max_retries", key, {
+                            "uid": uid,
+                            "sleep_hours": 5
+                        })
+                    
+                    sub["retry_count"] = retry_count
+                    sub["next_check_time"] = next_check
                     await self.home_sub_mgr.upsert_subscription(key, sub)
                 continue
-
-            display_name, mentions = await self._home_subscription_targets(uid, data)
-            messages = [
-                self._home_subscription_level_message(display_name, kind, level, total_count, ready_items, names)
-                for level in push_levels
-            ]
-            try:
-                chain = MessageChain()
-                for mention in mentions:
-                    chain.at(mention.get("name") or display_name, mention.get("qq"))
-                if mentions:
-                    chain.message("\n")
-                chain.message("\n\n".join(messages))
-                await self.context.send_message(sub["umo"], chain)
-            except Exception as e:
-                logger.warning(f"[Rocom] 家园订阅推送失败: {e}")
-                continue
-            for level in push_levels:
-                notify_state[level] = True
-            sub["notify_state"] = notify_state
-            sub["last_push_time"] = int(time.time())
-            await self.home_sub_mgr.upsert_subscription(key, sub)
-            await asyncio.sleep(2)
+            
+            data = self._build_home_render_data(res, uid)
+            
+            for key, sub in subs_list:
+                kind = str(sub.get("kind", "") or "")
+                total_items, ready_items, _unit, names = self._home_subscription_state(data, kind)
+                total_count = len(total_items)
+                ready_count = len(ready_items)
+                
+                # 空数据：指数退避重试
+                if total_count <= 0:
+                    retry_count = sub.get("retry_count", 0) + 1
+                    max_retries = 3
+                    
+                    if retry_count <= max_retries:
+                        retry_delay = 60 * (2 ** (retry_count - 1))
+                        next_check = current_time + retry_delay
+                        self.scheduler_logger.log("empty_data", key, {
+                            "kind": kind,
+                            "uid": uid,
+                            "retry": retry_count,
+                            "next_retry_sec": retry_delay
+                        })
+                    else:
+                        next_check = current_time + 5 * 3600
+                        self.scheduler_logger.log("empty_data_max_retries", key, {
+                            "kind": kind,
+                            "uid": uid,
+                            "sleep_hours": 5
+                        })
+                    
+                    sub["retry_count"] = retry_count
+                    sub["next_check_time"] = next_check
+                    await self.home_sub_mgr.upsert_subscription(key, sub)
+                    continue
+                
+                # 成功查询到数据，重置重试计数
+                sub["retry_count"] = 0
+                
+                # 计算下次检查时间
+                next_check = HomeScheduler.calculate_next_check_time(kind, total_items, current_time)
+                if next_check:
+                    sub["next_check_time"] = next_check
+                    next_time_str = datetime.fromtimestamp(next_check).strftime('%Y-%m-%d %H:%M:%S')
+                    logger.debug(f"[Rocom] 订阅 {key} 下次检查: {next_time_str}")
+                    self.scheduler_logger.log("check_scheduled", key, {
+                        "kind": kind,
+                        "uid": uid,
+                        "next_check": next_time_str,
+                        "total": total_count,
+                        "ready": ready_count
+                    })
+                
+                if total_count <= 0:
+                    await self.home_sub_mgr.upsert_subscription(key, sub)
+                    continue
+                
+                notify_state = sub.get("notify_state") if isinstance(sub.get("notify_state"), dict) else {}
+                changed = False
+                push_levels = []
+                
+                if ready_count <= 0:
+                    if notify_state.get("first") or notify_state.get("all"):
+                        notify_state["first"] = False
+                        notify_state["all"] = False
+                        changed = True
+                else:
+                    if not notify_state.get("first"):
+                        push_levels.append("first")
+                    if ready_count >= total_count and not notify_state.get("all"):
+                        push_levels.append("all")
+                    elif ready_count < total_count and notify_state.get("all"):
+                        notify_state["all"] = False
+                        changed = True
+                
+                if not push_levels:
+                    if changed:
+                        sub["notify_state"] = notify_state
+                        await self.home_sub_mgr.upsert_subscription(key, sub)
+                    continue
+                
+                display_name, mentions = await self._home_subscription_targets(uid, data)
+                messages = [
+                    self._home_subscription_level_message(display_name, kind, level, total_count, ready_items, names)
+                    for level in push_levels
+                ]
+                try:
+                    chain = MessageChain()
+                    for mention in mentions:
+                        chain.at(mention.get("name") or display_name, mention.get("qq"))
+                    if mentions:
+                        chain.message("\n")
+                    chain.message("\n\n".join(messages))
+                    await self.context.send_message(sub["umo"], chain)
+                except Exception as e:
+                    logger.warning(f"[Rocom] 家园订阅推送失败: {e}")
+                    continue
+                
+                for level in push_levels:
+                    notify_state[level] = True
+                sub["notify_state"] = notify_state
+                sub["last_push_time"] = current_time
+                await self.home_sub_mgr.upsert_subscription(key, sub)
+                await asyncio.sleep(1)
 
     def _announcement_id(self, item: Dict[str, Any] | None) -> str:
         item = item or {}
