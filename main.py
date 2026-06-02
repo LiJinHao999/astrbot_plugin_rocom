@@ -859,7 +859,13 @@ class RocomPlugin(Star):
             
             data = self._build_home_render_data(res, uid)
             
-            for key, sub in subs_list:
+            # 优化：同时更新该uid的所有订阅（包括未到期的）
+            all_subs = await self.home_sub_mgr.get_all_subscriptions()
+            uid_all_subs = {k: v for k, v in all_subs.items() 
+                           if str(v.get("uid", "")) == uid and v.get("kind") in {"garden", "inspiration"}}
+            
+            # 用同一份数据更新该uid的所有订阅
+            for key, sub in uid_all_subs.items():
                 kind = str(sub.get("kind", "") or "")
                 total_items, ready_items, _unit, names = self._home_subscription_state(data, kind)
                 total_count = len(total_items)
