@@ -76,6 +76,10 @@ class RocomScraper:
                     if time_match:
                         start_hour, start_min = int(time_match.group(1)), int(time_match.group(2))
                         end_hour, end_min = int(time_match.group(3)), int(time_match.group(4))
+                        
+                        if end_hour == 24:
+                            end_hour = 0
+                        
                         cn_tz = timezone(timedelta(hours=8))
                         now = datetime.now(cn_tz)
                         start_dt = datetime.combine(now.date(), dt_time(start_hour, start_min), tzinfo=cn_tz)
