@@ -905,8 +905,11 @@ class RocomPlugin(Star):
                 # 成功查询到数据，重置重试计数
                 sub["retry_count"] = 0
                 
-                # 计算下次检查时间
-                next_check = HomeScheduler.calculate_next_check_time(kind, total_items, current_time)
+                # 计算下次检查时间（精灵灵感使用配置的延后时间）
+                inspiration_buffer_seconds = self.home_subscription_interval_minutes * 60
+                next_check = HomeScheduler.calculate_next_check_time(
+                    kind, total_items, current_time, inspiration_buffer_seconds
+                )
                 if next_check:
                     sub["next_check_time"] = next_check
                     next_time_str = datetime.fromtimestamp(next_check).strftime('%Y-%m-%d %H:%M:%S')

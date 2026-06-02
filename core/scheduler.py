@@ -29,7 +29,8 @@ class HomeScheduler:
     def calculate_next_check_time(
         kind: str,
         items: List[Dict[str, Any]],
-        current_time: Optional[int] = None
+        current_time: Optional[int] = None,
+        inspiration_buffer_seconds: int = 300
     ) -> Optional[int]:
         """
         计算下次应该查询的时间戳
@@ -38,6 +39,7 @@ class HomeScheduler:
             kind: 'garden' 或 'inspiration'
             items: 当前状态的物品列表
             current_time: 当前时间戳（可选，默认为now）
+            inspiration_buffer_seconds: 精灵灵感延后查询的缓冲时间（秒）
         
         Returns:
             下次查询的时间戳，如果无需查询返回 None
@@ -101,8 +103,8 @@ class HomeScheduler:
                 # 时间较短：延后5分钟，保证查到成熟
                 next_check = earliest_ready + 300
         else:
-            # 精灵灵感：延后5分钟确保已成熟
-            next_check = earliest_ready + HomeScheduler.INSPIRATION_BUFFER
+            # 精灵灵感：使用配置的延后时间确保已成熟
+            next_check = earliest_ready + inspiration_buffer_seconds
         
         # 不能早于当前时间
         next_check = max(next_check, current_time + 60)

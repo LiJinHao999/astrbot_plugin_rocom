@@ -73,8 +73,8 @@
   },
   "home_subscription_interval_minutes": {
     "type": "int",
-    "description": "家园订阅检查间隔",
-    "hint": "单位：分钟。用于菜园成熟和精灵灵感订阅轮询",
+    "description": "精灵灵感延后查询时间",
+    "hint": "单位：分钟。精灵灵感在预计成熟时间后延迟多久查询，确保查到已成熟状态（推荐5-10分钟）",
     "default": 5
   },
   "announcement_subscription_enabled": {
