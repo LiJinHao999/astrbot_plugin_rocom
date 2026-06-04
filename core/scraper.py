@@ -244,7 +244,7 @@ class RocomScraper:
                             continue
                         start_month = int(start_match.group(1))
                         start_day = int(start_match.group(2))
-                        start_hour = int(start_match.group(3)) if start_match.group(3) else 0
+                        start_hour = int(start_match.group(3)) if start_match.group(3) else 4
                         start_minute = int(start_match.group(4)) if start_match.group(4) else 0
                         start_date = datetime(year, start_month, start_day, start_hour, start_minute)
                         start_date = int(start_date.timestamp())
@@ -256,8 +256,8 @@ class RocomScraper:
                             continue
                         end_month = int(end_match.group(1)) if end_match.group(1) else start_month
                         end_day = int(end_match.group(2))
-                        end_hour = int(end_match.group(3)) if end_match.group(3) else 23
-                        end_minute = int(end_match.group(4)) if end_match.group(4) else 59
+                        end_hour = int(end_match.group(3)) if end_match.group(3) else 4
+                        end_minute = int(end_match.group(4)) if end_match.group(4) else 0
                         # 跨年处理：如果结束月份 < 开始月份，说明跨年了
                         if end_month < start_month:
                             end_date = datetime(year + 1, end_month, end_day, end_hour, end_minute)
