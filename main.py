@@ -4733,28 +4733,47 @@ class RocomPlugin(Star):
         today_end_ts = int(today_end.timestamp())
 
         tomorrow_start = today_start + timedelta(days=1)
-        tomorrow_morning_6am = datetime.combine(tomorrow_start.date(), datetime.min.time(), tzinfo=self._cn_tz()) + timedelta(hours=6)
-        tomorrow_morning_6am_ts = int(tomorrow_morning_6am.timestamp())
+        tomorrow_end = today_end + timedelta(days=1)
+        tomorrow_start_ts = int(tomorrow_start.timestamp())
+        tomorrow_end_ts = int(tomorrow_end.timestamp())
 
-        logger.info(f"[Rocom] 活动通知：筛选窗口 today=[{today_start.strftime('%m-%d %H:%M')}, {today_end.strftime('%m-%d %H:%M')}], tomorrow_6am={tomorrow_morning_6am.strftime('%m-%d %H:%M')}")
+        logger.info(f"[Rocom] 活动通知：筛选窗口 today=[{today_start.strftime('%m-%d %H:%M')}, {today_end.strftime('%m-%d %H:%M')}], tomorrow=[{tomorrow_start.strftime('%m-%d %H:%M')}, {tomorrow_end.strftime('%m-%d %H:%M')}]")
 
+        # 今日开始：start_time 在今天
         starting_today = [a for a in activities if today_start_ts <= a.get('start_time', 0) <= today_end_ts]
-        ending_today = [a for a in activities if today_start_ts <= a.get('end_time', 0) <= tomorrow_morning_6am_ts]
+        # 明日开始：start_time 在明天
+        starting_tomorrow = [a for a in activities if tomorrow_start_ts <= a.get('start_time', 0) <= tomorrow_end_ts]
+        # 今日结束：end_time 在今天
+        ending_today = [a for a in activities if today_start_ts <= a.get('end_time', 0) <= today_end_ts]
+        # 明日结束：end_time 在明天
+        ending_tomorrow = [a for a in activities if tomorrow_start_ts <= a.get('end_time', 0) <= tomorrow_end_ts]
 
-        logger.info(f"[Rocom] 活动通知：今日开始 {len(starting_today)} 个，今日结束 {len(ending_today)} 个")
+        logger.info(f"[Rocom] 活动通知：今日开始 {len(starting_today)} 个，明日开始 {len(starting_tomorrow)} 个，今日结束 {len(ending_today)} 个，明日结束 {len(ending_tomorrow)} 个")
 
-        if not starting_today and not ending_today:
-            logger.info("[Rocom] 活动通知：今日无开始/结束的活动，跳过推送")
+        if not starting_today and not starting_tomorrow and not ending_today and not ending_tomorrow:
+            logger.info("[Rocom] 活动通知：今明两天无开始/结束的活动，跳过推送")
             return
 
         message = "【洛克王国活动提醒】\n\n"
         if starting_today:
             message += "🎉 今日开始的活动：\n"
             for act in starting_today:
-                et_str = datetime.fromtimestamp(act['end_time'], tz=self._cn_tz()).strftime('%m月%d日') if act.get('end_time') else ''
+                et_str = datetime.fromtimestamp(act['end_time'], tz=self._cn_tz()).strftime('%m月%d日 %H:%M') if act.get('end_time') else ''
                 message += f"• {act['name']}"
                 if et_str:
-                    message += f"（持续至{et_str}）"
+                    message += f"（至{et_str}）"
+                message += "\n"
+                if act.get('rewards'):
+                    message += f"  奖励：{act['rewards']}\n"
+            message += "\n"
+
+        if starting_tomorrow:
+            message += "🔜 明日开始的活动：\n"
+            for act in starting_tomorrow:
+                et_str = datetime.fromtimestamp(act['end_time'], tz=self._cn_tz()).strftime('%m月%d日 %H:%M') if act.get('end_time') else ''
+                message += f"• {act['name']}"
+                if et_str:
+                    message += f"（至{et_str}）"
                 message += "\n"
                 if act.get('rewards'):
                     message += f"  奖励：{act['rewards']}\n"
@@ -4763,6 +4782,14 @@ class RocomPlugin(Star):
         if ending_today:
             message += "⏰ 今日结束的活动：\n"
             for act in ending_today:
+                message += f"• {act['name']}\n"
+                if act.get('rewards'):
+                    message += f"  奖励：{act['rewards']}\n"
+            message += "\n"
+
+        if ending_tomorrow:
+            message += "⚠️ 明日结束的活动：\n"
+            for act in ending_tomorrow:
                 message += f"• {act['name']}\n"
                 if act.get('rewards'):
                     message += f"  奖励：{act['rewards']}\n"
