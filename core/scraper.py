@@ -191,68 +191,82 @@ class RocomScraper:
             logger.info(f"[Rocom Scraper] 找到 {len(activity_cards)} 个活动卡片")
             
             activities = []
-            for card in activity_cards:
+            for i, card in enumerate(activity_cards):
                 try:
                     title_elem = await card.query_selector('.hd-card__title-text')
                     if not title_elem:
+                        logger.debug(f"[Rocom Scraper] 卡片 #{i}: 没有 .hd-card__title-text 元素，跳过")
                         continue
                     name = (await title_elem.text_content() or "").strip()
                     if not name:
+                        logger.debug(f"[Rocom Scraper] 卡片 #{i}: 标题为空，跳过")
                         continue
                     
                     full_text = (await card.text_content() or "").strip()
+                    # 打印原始文本的前 200 字符，帮助诊断
+                    text_preview = full_text[:200].replace('\n', '\\n')
+                    logger.info(f"[Rocom Scraper] 卡片 #{i} [{name}]: {text_preview}")
                     
                     import re
                     from datetime import datetime
                     
-                    # 支持两种日期格式：
-                    #   完整格式: 1月1日~2月15日  (两端都带月份)
-                    #   简写格式: 1月1日~15日      (结束日期省略月份，与开始同月)
+                    # 尝试多种正则匹配日期格式
+                    # 模式1: 完整格式 1月1日~2月15日
+                    # 模式2: 简写格式 1月1日~15日 (省略月份)
+                    # 模式3: 月份前可能有年份 2025年1月1日~2025年2月15日
                     date_match = re.search(
                         r'活动时间[：:]\s*(\d+月\d+日.*?~.*?(?:\d+月)?\d+日.*?)(?:\n|活动相关|$)',
                         full_text
                     )
                     date_range = date_match.group(1).strip() if date_match else ""
                     
+                    if not date_range:
+                        logger.warning(f"[Rocom Scraper] 卡片 #{i} [{name}] 日期正则未匹配，全文: {full_text[:300]}")
+                        continue
+                    
+                    logger.info(f"[Rocom Scraper] 卡片 #{i} [{name}] 提取到日期范围: {date_range}")
+                    
                     start_date, end_date = None, None
-                    if date_range:
-                        parts = date_range.split('~')
-                        if len(parts) == 2:
-                            start_str = parts[0].strip()
-                            end_str = parts[1].strip()
-                            
-                            year = datetime.now().year
-                            try:
-                                # 解析开始日期（必须带月份）
-                                start_match = re.match(r'(\d+)月(\d+)日(?:\s+(\d+):(\d+))?', start_str)
-                                if not start_match:
-                                    logger.debug(f"[Rocom Scraper] 无法解析开始日期: {start_str}")
-                                    continue
-                                start_month = int(start_match.group(1))
-                                start_day = int(start_match.group(2))
-                                start_hour = int(start_match.group(3)) if start_match.group(3) else 0
-                                start_minute = int(start_match.group(4)) if start_match.group(4) else 0
-                                start_date = datetime(year, start_month, start_day, start_hour, start_minute)
-                                start_date = int(start_date.timestamp())
-                                
-                                # 解析结束日期（可能省略月份，此时沿用 start_month）
-                                end_match = re.match(r'(?:(\d+)月)?(\d+)日(?:\s+(\d+):(\d+))?', end_str)
-                                if not end_match:
-                                    logger.debug(f"[Rocom Scraper] 无法解析结束日期: {end_str}")
-                                    continue
-                                end_month = int(end_match.group(1)) if end_match.group(1) else start_month
-                                end_day = int(end_match.group(2))
-                                end_hour = int(end_match.group(3)) if end_match.group(3) else 23
-                                end_minute = int(end_match.group(4)) if end_match.group(4) else 59
-                                # 跨年处理：如果结束月份 < 开始月份，说明跨年了
-                                if end_month < start_month:
-                                    end_date = datetime(year + 1, end_month, end_day, end_hour, end_minute)
-                                else:
-                                    end_date = datetime(year, end_month, end_day, end_hour, end_minute)
-                                end_date = int(end_date.timestamp())
-                            except Exception as e:
-                                logger.debug(f"[Rocom Scraper] 日期解析异常: {e}, start_str={start_str}, end_str={end_str}")
-                                pass
+                    parts = date_range.split('~')
+                    if len(parts) != 2:
+                        logger.warning(f"[Rocom Scraper] 卡片 #{i} [{name}] 无法按~分割: {date_range}")
+                        continue
+                    
+                    start_str = parts[0].strip()
+                    end_str = parts[1].strip()
+                    
+                    year = datetime.now().year
+                    try:
+                        # 解析开始日期（必须带月份）
+                        start_match = re.match(r'(\d+)月(\d+)日(?:\s+(\d+):(\d+))?', start_str)
+                        if not start_match:
+                            logger.warning(f"[Rocom Scraper] 卡片 #{i} [{name}] 无法解析开始日期: '{start_str}'")
+                            continue
+                        start_month = int(start_match.group(1))
+                        start_day = int(start_match.group(2))
+                        start_hour = int(start_match.group(3)) if start_match.group(3) else 0
+                        start_minute = int(start_match.group(4)) if start_match.group(4) else 0
+                        start_date = datetime(year, start_month, start_day, start_hour, start_minute)
+                        start_date = int(start_date.timestamp())
+                        
+                        # 解析结束日期（可能省略月份，此时沿用 start_month）
+                        end_match = re.match(r'(?:(\d+)月)?(\d+)日(?:\s+(\d+):(\d+))?', end_str)
+                        if not end_match:
+                            logger.warning(f"[Rocom Scraper] 卡片 #{i} [{name}] 无法解析结束日期: '{end_str}'")
+                            continue
+                        end_month = int(end_match.group(1)) if end_match.group(1) else start_month
+                        end_day = int(end_match.group(2))
+                        end_hour = int(end_match.group(3)) if end_match.group(3) else 23
+                        end_minute = int(end_match.group(4)) if end_match.group(4) else 59
+                        # 跨年处理：如果结束月份 < 开始月份，说明跨年了
+                        if end_month < start_month:
+                            end_date = datetime(year + 1, end_month, end_day, end_hour, end_minute)
+                        else:
+                            end_date = datetime(year, end_month, end_day, end_hour, end_minute)
+                        end_date = int(end_date.timestamp())
+                    except Exception as e:
+                        logger.warning(f"[Rocom Scraper] 卡片 #{i} [{name}] 日期解析异常: {e}, start_str={start_str}, end_str={end_str}")
+                        continue
                     
                     if not start_date or not end_date:
                         continue
@@ -271,12 +285,13 @@ class RocomScraper:
                         'rewards': rewards
                     }
                     
+                    logger.info(f"[Rocom Scraper] 卡片 #{i} [{name}] 解析成功: {activity['start_date']} -> {activity['end_date']}")
                     activities.append(activity)
                 except Exception as e:
-                    logger.warning(f"[Rocom Scraper] 提取单个活动失败: {e}")
+                    logger.warning(f"[Rocom Scraper] 卡片 #{i} 提取异常: {e}")
                     continue
             
-            logger.info(f"[Rocom Scraper] 成功提取 {len(activities)} 个有效活动")
+            logger.info(f"[Rocom Scraper] 成功提取 {len(activities)} 个有效活动 / 共 {len(activity_cards)} 个卡片")
             return {'activities': activities}
             
         except PlaywrightTimeout as e:

@@ -3808,11 +3808,23 @@ class RocomPlugin(Star):
             yield event.plain_result("仅当前群管理员可以测试活动通知。")
             return
         
-        yield event.plain_result("正在测试活动通知功能...")
+        yield event.plain_result("🔍 正在测试活动通知功能，正在爬取活动数据...")
         try:
-            await self._check_activity_notifications()
-            yield event.plain_result("✅ 活动通知测试完成，如有今日开始/结束的活动已发送通知。")
+            from .core.scraper import RocomScraper
+            scraper = RocomScraper()
+            activities_data = await scraper.get_activities_info()
+            raw_count = len(activities_data.get('activities', [])) if activities_data else 0
+            await scraper.close()
+            
+            if not raw_count:
+                yield event.plain_result("❌ 爬虫未返回有效活动数据，请查看日志排查。")
+                return
+            
+            yield event.plain_result(f"📊 共爬取到 {raw_count} 个活动，正在推送通知...")
+            await self._push_activity_notifications(activities_data)
+            yield event.plain_result("✅ 活动通知测试完成。请查看上方的推送消息，如数量不符请查看插件日志。")
         except Exception as e:
+            logger.error(f"[Rocom] 活动通知测试失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ 活动通知测试失败：{e}")
 
     @filter.command("远行商人", alias={"yxsr"})
@@ -4681,30 +4693,38 @@ class RocomPlugin(Star):
                 await asyncio.sleep(60)
 
     async def _check_activity_notifications(self):
-        """检查并发送活动通知"""
+        """检查并发送活动通知（供定时任务调用）"""
         all_subs = await self.activity_sub_mgr.get_all_subscriptions()
         if not all_subs:
             logger.info("[Rocom] 没有活动通知订阅，跳过检查")
             return
         
+        from .core.scraper import RocomScraper
+        scraper = RocomScraper()
         try:
-            from .core.scraper import RocomScraper
-            scraper = RocomScraper()
             activities_data = await scraper.get_activities_info()
+        finally:
             await scraper.close()
-            
-            if not activities_data or not activities_data.get('activities'):
-                logger.warning("[Rocom] 活动通知：爬虫未返回有效活动数据")
-                return
-            
-            activities = activities_data['activities']
-            logger.info(f"[Rocom] 活动通知：爬取到 {len(activities)} 个活动，开始筛选今日相关活动")
-            
-            # 调试：打印每个活动的日期信息
-            for a in activities:
-                st = datetime.fromtimestamp(a.get('start_time', 0), tz=self._cn_tz()).strftime('%m-%d %H:%M') if a.get('start_time') else 'N/A'
-                et = datetime.fromtimestamp(a.get('end_time', 0), tz=self._cn_tz()).strftime('%m-%d %H:%M') if a.get('end_time') else 'N/A'
-                logger.debug(f"  [{a.get('name', '?')}] 开始={st} 结束={et}")
+        
+        if not activities_data or not activities_data.get('activities'):
+            logger.warning("[Rocom] 活动通知：爬虫未返回有效活动数据")
+            return
+        
+        logger.info(f"[Rocom] 活动通知：爬取到 {len(activities_data['activities'])} 个活动")
+        await self._push_activity_notifications(activities_data)
+
+    async def _push_activity_notifications(self, activities_data: dict):
+        """根据活动数据筛选并推送通知（供测试命令和定时任务共用）"""
+        activities = activities_data['activities']
+        all_subs = await self.activity_sub_mgr.get_all_subscriptions()
+        if not all_subs:
+            return
+        
+        # 调试：打印每个活动的日期信息
+        for a in activities:
+            st = datetime.fromtimestamp(a.get('start_time', 0), tz=self._cn_tz()).strftime('%m-%d %H:%M') if a.get('start_time') else 'N/A'
+            et = datetime.fromtimestamp(a.get('end_time', 0), tz=self._cn_tz()).strftime('%m-%d %H:%M') if a.get('end_time') else 'N/A'
+            logger.debug(f"  [{a.get('name', '?')}] 开始={st} 结束={et}")
             
             now = datetime.now(self._cn_tz())
             today_start = datetime.combine(now.date(), datetime.min.time(), tzinfo=self._cn_tz())
