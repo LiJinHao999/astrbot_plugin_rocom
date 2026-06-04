@@ -203,12 +203,19 @@ class RocomScraper:
                     full_text = (await card.text_content() or "").strip()
                     
                     import re
-                    date_match = re.search(r'活动时间[：:]\s*(\d+月\d+日.*?~.*?\d+月\d+日.*?)(?:\n|活动相关|$)', full_text)
+                    from datetime import datetime
+                    
+                    # 支持两种日期格式：
+                    #   完整格式: 1月1日~2月15日  (两端都带月份)
+                    #   简写格式: 1月1日~15日      (结束日期省略月份，与开始同月)
+                    date_match = re.search(
+                        r'活动时间[：:]\s*(\d+月\d+日.*?~.*?(?:\d+月)?\d+日.*?)(?:\n|活动相关|$)',
+                        full_text
+                    )
                     date_range = date_match.group(1).strip() if date_match else ""
                     
                     start_date, end_date = None, None
                     if date_range:
-                        from datetime import datetime
                         parts = date_range.split('~')
                         if len(parts) == 2:
                             start_str = parts[0].strip()
@@ -216,22 +223,35 @@ class RocomScraper:
                             
                             year = datetime.now().year
                             try:
+                                # 解析开始日期（必须带月份）
                                 start_match = re.match(r'(\d+)月(\d+)日(?:\s+(\d+):(\d+))?', start_str)
-                                if start_match:
-                                    month, day = int(start_match.group(1)), int(start_match.group(2))
-                                    hour = int(start_match.group(3)) if start_match.group(3) else 0
-                                    minute = int(start_match.group(4)) if start_match.group(4) else 0
-                                    start_date = datetime(year, month, day, hour, minute)
-                                    start_date = int(start_date.timestamp())
+                                if not start_match:
+                                    logger.debug(f"[Rocom Scraper] 无法解析开始日期: {start_str}")
+                                    continue
+                                start_month = int(start_match.group(1))
+                                start_day = int(start_match.group(2))
+                                start_hour = int(start_match.group(3)) if start_match.group(3) else 0
+                                start_minute = int(start_match.group(4)) if start_match.group(4) else 0
+                                start_date = datetime(year, start_month, start_day, start_hour, start_minute)
+                                start_date = int(start_date.timestamp())
                                 
-                                end_match = re.match(r'(\d+)月(\d+)日(?:\s+(\d+):(\d+))?', end_str)
-                                if end_match:
-                                    month, day = int(end_match.group(1)), int(end_match.group(2))
-                                    hour = int(end_match.group(3)) if end_match.group(3) else 23
-                                    minute = int(end_match.group(4)) if end_match.group(4) else 59
-                                    end_date = datetime(year, month, day, hour, minute)
-                                    end_date = int(end_date.timestamp())
-                            except:
+                                # 解析结束日期（可能省略月份，此时沿用 start_month）
+                                end_match = re.match(r'(?:(\d+)月)?(\d+)日(?:\s+(\d+):(\d+))?', end_str)
+                                if not end_match:
+                                    logger.debug(f"[Rocom Scraper] 无法解析结束日期: {end_str}")
+                                    continue
+                                end_month = int(end_match.group(1)) if end_match.group(1) else start_month
+                                end_day = int(end_match.group(2))
+                                end_hour = int(end_match.group(3)) if end_match.group(3) else 23
+                                end_minute = int(end_match.group(4)) if end_match.group(4) else 59
+                                # 跨年处理：如果结束月份 < 开始月份，说明跨年了
+                                if end_month < start_month:
+                                    end_date = datetime(year + 1, end_month, end_day, end_hour, end_minute)
+                                else:
+                                    end_date = datetime(year, end_month, end_day, end_hour, end_minute)
+                                end_date = int(end_date.timestamp())
+                            except Exception as e:
+                                logger.debug(f"[Rocom Scraper] 日期解析异常: {e}, start_str={start_str}, end_str={end_str}")
                                 pass
                     
                     if not start_date or not end_date:

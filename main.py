@@ -4684,6 +4684,7 @@ class RocomPlugin(Star):
         """检查并发送活动通知"""
         all_subs = await self.activity_sub_mgr.get_all_subscriptions()
         if not all_subs:
+            logger.info("[Rocom] 没有活动通知订阅，跳过检查")
             return
         
         try:
@@ -4693,9 +4694,18 @@ class RocomPlugin(Star):
             await scraper.close()
             
             if not activities_data or not activities_data.get('activities'):
+                logger.warning("[Rocom] 活动通知：爬虫未返回有效活动数据")
                 return
             
             activities = activities_data['activities']
+            logger.info(f"[Rocom] 活动通知：爬取到 {len(activities)} 个活动，开始筛选今日相关活动")
+            
+            # 调试：打印每个活动的日期信息
+            for a in activities:
+                st = datetime.fromtimestamp(a.get('start_time', 0), tz=self._cn_tz()).strftime('%m-%d %H:%M') if a.get('start_time') else 'N/A'
+                et = datetime.fromtimestamp(a.get('end_time', 0), tz=self._cn_tz()).strftime('%m-%d %H:%M') if a.get('end_time') else 'N/A'
+                logger.debug(f"  [{a.get('name', '?')}] 开始={st} 结束={et}")
+            
             now = datetime.now(self._cn_tz())
             today_start = datetime.combine(now.date(), datetime.min.time(), tzinfo=self._cn_tz())
             today_end = datetime.combine(now.date(), datetime.max.time(), tzinfo=self._cn_tz())
@@ -4706,17 +4716,26 @@ class RocomPlugin(Star):
             tomorrow_morning_6am = datetime.combine(tomorrow_start.date(), datetime.min.time(), tzinfo=self._cn_tz()) + timedelta(hours=6)
             tomorrow_morning_6am_ts = int(tomorrow_morning_6am.timestamp())
             
+            logger.info(f"[Rocom] 活动通知：筛选窗口 today=[{today_start.strftime('%m-%d %H:%M')}, {today_end.strftime('%m-%d %H:%M')}], tomorrow_6am={tomorrow_morning_6am.strftime('%m-%d %H:%M')}")
+            
             starting_today = [a for a in activities if today_start_ts <= a.get('start_time', 0) <= today_end_ts]
             ending_today = [a for a in activities if today_start_ts <= a.get('end_time', 0) <= tomorrow_morning_6am_ts]
             
+            logger.info(f"[Rocom] 活动通知：今日开始 {len(starting_today)} 个，今日结束 {len(ending_today)} 个")
+            
             if not starting_today and not ending_today:
+                logger.info("[Rocom] 活动通知：今日无开始/结束的活动，跳过推送")
                 return
             
             message = "【洛克王国活动提醒】\n\n"
             if starting_today:
                 message += "🎉 今日开始的活动：\n"
                 for act in starting_today:
-                    message += f"• {act['name']}\n"
+                    et_str = datetime.fromtimestamp(act['end_time'], tz=self._cn_tz()).strftime('%m月%d日') if act.get('end_time') else ''
+                    message += f"• {act['name']}"
+                    if et_str:
+                        message += f"（持续至{et_str}）"
+                    message += "\n"
                     if act.get('rewards'):
                         message += f"  奖励：{act['rewards']}\n"
                 message += "\n"
@@ -4728,9 +4747,12 @@ class RocomPlugin(Star):
                     if act.get('rewards'):
                         message += f"  奖励：{act['rewards']}\n"
             
+            logger.info(f"[Rocom] 活动通知：准备推送到 {len(all_subs)} 个订阅\n{message}")
+            
             for umo in all_subs.keys():
                 try:
-                    await self.context.send_message(umo, MessageChain().message(message))
+                    chain = MessageChain().message(message)
+                    await self.context.send_message(umo, chain)
                 except Exception as e:
                     logger.error(f"[Rocom] 发送活动通知到 {umo} 失败: {e}")
                     
