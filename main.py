@@ -4742,8 +4742,9 @@ class RocomPlugin(Star):
 
         # 今日开始：start_time == 今天 04:00
         starting_today = [a for a in activities if a.get('start_time') == today_4am_ts]
-        # 今日结束：end_time 在今天 00:00 ~ 明天 04:00 之间
-        ending_today = [a for a in activities if today_start_ts <= a.get('end_time', 0) <= tomorrow_4am_ts]
+        # 今日结束：end_time 在今天 00:00 ~ 明天 04:00 之间，且尚未结束
+        now_ts = int(now.timestamp())
+        ending_today = [a for a in activities if today_start_ts <= a.get('end_time', 0) <= tomorrow_4am_ts and a.get('end_time', 0) > now_ts]
 
         logger.info(f"[Rocom] 活动通知：今日开始 {len(starting_today)} 个，今日结束 {len(ending_today)} 个")
 
