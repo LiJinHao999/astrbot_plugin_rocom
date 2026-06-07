@@ -1356,10 +1356,10 @@ class RocomPlugin(Star):
         if now.tzinfo is None:
             now = now.replace(tzinfo=self._cn_tz())
         return [
-            now.replace(hour=8, minute=1, second=0, microsecond=0),
-            now.replace(hour=12, minute=1, second=0, microsecond=0),
-            now.replace(hour=16, minute=1, second=0, microsecond=0),
-            now.replace(hour=20, minute=1, second=0, microsecond=0),
+            now.replace(hour=8, minute=30, second=0, microsecond=0),
+            now.replace(hour=12, minute=30, second=0, microsecond=0),
+            now.replace(hour=16, minute=30, second=0, microsecond=0),
+            now.replace(hour=20, minute=30, second=0, microsecond=0),
         ]
 
     def _next_merchant_check_time(self, now: datetime | None = None) -> datetime:
