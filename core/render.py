@@ -13,6 +13,7 @@ import mimetypes
 import uuid
 import tempfile
 import jinja2
+from pathlib import Path
 from typing import Dict, Any, Optional
 from astrbot.api import logger
 
@@ -31,9 +32,10 @@ class Renderer:
             )
         return cls._jinja_env
 
-    def __init__(self, res_path: str, render_timeout: int = 30000):
+    def __init__(self, res_path: str, render_timeout: int = 30000, font_paths: Optional[Dict[str, str]] = None):
         self.res_path = res_path
         self.render_timeout = render_timeout
+        self.font_paths = font_paths or {}
         self._browser = None
         self._playwright = None
         self._lock = asyncio.Lock()
@@ -189,6 +191,7 @@ class Renderer:
                         return ""
                 
                 css_content = self._adapt_template(css_content)
+                css_content = self._rewrite_font_urls(css_content)
                 return f"<style>\n{css_content}\n</style>"
             return ""
 
@@ -236,7 +239,26 @@ class Renderer:
             inline_style_bg,
             html,
         )
+        html = self._rewrite_font_urls(html)
         return html
+
+    def _rewrite_font_urls(self, content: str) -> str:
+        if not self.font_paths:
+            return content
+
+        def replace_font_url(match):
+            raw_path = match.group(1)
+            filename = os.path.basename(raw_path.replace("\\", "/"))
+            font_path = self.font_paths.get(filename)
+            if not font_path or not os.path.exists(font_path):
+                return match.group(0)
+            return f"url('{Path(font_path).resolve().as_uri()}')"
+
+        return re.sub(
+            r"url\(\s*['\"]?(?:\{\{(?:_res_path|pluResPath)\}\})?(?:\.\./\.\./)?ttf/([^)'\"]+\.(?:ttf|woff2))['\"]?\s*\)",
+            replace_font_url,
+            content,
+        )
 
     def _render_jinja(
         self, template_str: str, data: Dict[str, Any]
@@ -257,11 +279,24 @@ class Renderer:
         """Playwright 截图"""
         from playwright.async_api import async_playwright
 
-        output_path = os.path.join(
-            self._output_dir, f"render_{uuid.uuid4().hex[:8]}.png"
-        )
-
         try:
+            options = options or {}
+            image_format = str(options.get("image_format", "png") or "png").lower()
+            if image_format in {"jpg", "jpeg"}:
+                image_format = "jpeg"
+                output_ext = "jpg"
+            else:
+                image_format = "png"
+                output_ext = "png"
+            try:
+                image_quality = int(options.get("image_quality", 85))
+            except (TypeError, ValueError):
+                image_quality = 85
+            image_quality = min(max(image_quality, 1), 100)
+            output_path = os.path.join(
+                self._output_dir, f"render_{uuid.uuid4().hex[:8]}.{output_ext}"
+            )
+
             async with self._lock:
                 # 确保 playwright 和 browser 可用，处理 stale 实例
                 try:
@@ -284,7 +319,6 @@ class Renderer:
                     self._playwright = await async_playwright().start()
                     self._browser = await self._playwright.chromium.launch()
 
-            options = options or {}
             device_scale_factor = float(options.get("device_scale_factor", 2.0))
             viewport_width = int(options.get("viewport_width", 1400))
             viewport_height = int(options.get("viewport_height", 900))
@@ -368,9 +402,19 @@ class Renderer:
                     }
                 )
                 await page.wait_for_timeout(100)
-                await el.screenshot(path=output_path, type="png")
+                screenshot_options = {"path": output_path, "type": image_format}
+                if image_format == "jpeg":
+                    screenshot_options["quality"] = image_quality
+                await el.screenshot(**screenshot_options)
             else:
-                await page.screenshot(path=output_path, full_page=True)
+                screenshot_options = {
+                    "path": output_path,
+                    "full_page": True,
+                    "type": image_format,
+                }
+                if image_format == "jpeg":
+                    screenshot_options["quality"] = image_quality
+                await page.screenshot(**screenshot_options)
 
             if el:
                 await el.dispose()
