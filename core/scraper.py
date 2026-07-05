@@ -71,11 +71,17 @@ class RocomScraper:
             return None
 
     def _parse_merchant_list(self, batch_list: List[Dict]) -> List[Dict]:
-        """解析 API 返回的商品批次列表"""
+        """解析 API 返回的商品批次列表，按 dict_id 去重"""
         all_goods: List[Dict] = []
+        seen_ids: set = set()
         for batch_obj in batch_list:
             items = batch_obj.get("items") or []
             for item in items:
+                # 用 dict_id 去重（全天商品会在每个 batch 中重复出现）
+                dict_id = item.get("dict_id") or item.get("id") or item.get("name")
+                if dict_id in seen_ids:
+                    continue
+                seen_ids.add(dict_id)
                 parsed = self._parse_merchant_item(item)
                 if parsed:
                     all_goods.append(parsed)
