@@ -1,305 +1,218 @@
 """
-洛克王国数据爬虫模块
-用于即时爬取商人信息和活动日历
+洛克王国数据查询模块
+通过 4399 活动工具平台 API 获取商人信息和活动日历
 """
-import asyncio
+import httpx
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from astrbot.api import logger
+
+_CN_TZ = timezone(timedelta(hours=8))
+_BASE_URL = "https://huodong2.4399.com/n/comm/tool/api.php"
+_TOOL_ID = "11"
+_HEADERS = {"User-Agent": "Mozilla/5.0"}
+_TIMEOUT = 15.0
+
+# batch 编号 → 时间段
+_BATCH_SLOTS = {
+    1: ("08:00", "12:00"),
+    2: ("12:00", "16:00"),
+    3: ("16:00", "20:00"),
+    4: ("20:00", "24:00"),
+}
 
 
 class RocomScraper:
-    """洛克王国数据爬虫"""
-    
+    """洛克王国数据查询（httpx 直连 API）"""
+
     def __init__(self):
-        self.url = "https://huodong2.4399.com/yxhtools/game-store"
-        self._playwright = None
-        self._browser = None
-        self._context = None
-    
-    async def _ensure_browser(self):
-        """确保浏览器已启动"""
-        if self._browser is None:
-            try:
-                self._playwright = await async_playwright().start()
-                self._browser = await self._playwright.chromium.launch(headless=True)
-                self._context = await self._browser.new_context()
-                logger.info("[Rocom Scraper] 浏览器已启动")
-            except Exception as e:
-                logger.error(f"[Rocom Scraper] 启动浏览器失败: {e}")
-                raise
-    
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def _ensure_client(self):
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(headers=_HEADERS, timeout=_TIMEOUT)
+
     async def close(self):
-        """关闭浏览器"""
-        try:
-            if self._context:
-                await self._context.close()
-            if self._browser:
-                await self._browser.close()
-            if self._playwright:
-                await self._playwright.stop()
-            self._browser = None
-            self._context = None
-            self._playwright = None
-            logger.info("[Rocom Scraper] 浏览器已关闭")
-        except Exception as e:
-            logger.error(f"[Rocom Scraper] 关闭浏览器失败: {e}")
-    
+        """关闭 HTTP 客户端"""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
+
+    # ── 远行商人 ─────────────────────────────────────────────
+
     async def get_merchant_info(self) -> Optional[Dict]:
-        """爬取商人信息"""
-        page = None
+        """查询远行商人商品列表"""
         try:
-            logger.info("[Rocom Scraper] 开始爬取商人信息")
-            await self._ensure_browser()
-            page = await self._context.new_page()
-            
-            logger.info(f"[Rocom Scraper] 正在访问: {self.url}")
-            await page.goto(self.url, wait_until="networkidle", timeout=30000)
-            await page.wait_for_timeout(3000)
-            logger.info("[Rocom Scraper] 页面加载完成")
-            
-            time_slot_buttons = await page.query_selector_all('.time-slot-btn')
-            logger.info(f"[Rocom Scraper] 找到 {len(time_slot_buttons)} 个时间段按钮")
-            
-            all_goods = []
-            for i, button in enumerate(time_slot_buttons):
-                try:
-                    button_text = (await button.text_content() or "").strip()
-                    logger.info(f"[Rocom Scraper] 点击时间段按钮: {button_text}")
-                    await button.click()
-                    await page.wait_for_timeout(1000)
-                    
-                    from datetime import datetime, time as dt_time, timezone, timedelta
-                    import re
-                    time_match = re.match(r'(\d+):(\d+)-(\d+):(\d+)', button_text)
-                    start_ts, end_ts = None, None
-                    if time_match:
-                        start_hour, start_min = int(time_match.group(1)), int(time_match.group(2))
-                        end_hour, end_min = int(time_match.group(3)), int(time_match.group(4))
-                        
-                        if end_hour == 24:
-                            end_hour = 0
-                        
-                        cn_tz = timezone(timedelta(hours=8))
-                        now = datetime.now(cn_tz)
-                        start_dt = datetime.combine(now.date(), dt_time(start_hour, start_min), tzinfo=cn_tz)
-                        end_dt = datetime.combine(now.date(), dt_time(end_hour, end_min), tzinfo=cn_tz)
-                        if end_hour == 0:
-                            end_dt += timedelta(days=1)
-                        start_ts = int(start_dt.timestamp() * 1000)
-                        end_ts = int(end_dt.timestamp() * 1000)
-                    
-                    visible_goods = await page.query_selector_all('.goods-list-box:not([style*="display: none"]) .goods-row')
-                    logger.info(f"[Rocom Scraper] 时间段 {button_text} 找到 {len(visible_goods)} 个可见商品")
-                    
-                    for goods in visible_goods:
-                        try:
-                            name_elem = await goods.query_selector('.goods-row__name')
-                            if not name_elem:
-                                continue
-                            name = (await name_elem.text_content() or "").strip()
-                            if not name:
-                                continue
-                            
-                            icon_url = ""
-                            try:
-                                pic_elem = await goods.query_selector('.goods-row__pic img')
-                                if pic_elem:
-                                    icon_url = await pic_elem.get_attribute('src') or ""
-                            except:
-                                pass
-                            
-                            price_elem = await goods.query_selector('.goods-row__price span')
-                            price_text = (await price_elem.text_content()).strip() if price_elem else "0"
-                            price = int(price_text.replace(',', '').replace('W', '0000')) if price_text else 0
-                            
-                            limit_elem = await goods.query_selector('.goods-row__limit')
-                            limit_text = (await limit_elem.text_content()).strip() if limit_elem else ""
-                            limit = int(''.join(filter(str.isdigit, limit_text))) if limit_text else 0
-                            
-                            countdown_elem = await goods.query_selector('.goods-countdown')
-                            countdown = (await countdown_elem.text_content()).strip() if countdown_elem else ""
-                            is_active = countdown and "已结束" not in countdown
-                            
-                            rare_elem = await goods.query_selector('.goods-row__rare')
-                            is_rare = rare_elem is not None
-                            
-                            item = {
-                                "name": name,
-                                "price": price,
-                                "limit": limit,
-                                "is_active": is_active,
-                                "is_rare": is_rare,
-                                "icon_url": icon_url,
-                                "start_time": start_ts,
-                                "end_time": end_ts
-                            }
-                            all_goods.append(item)
-                            
-                        except Exception as e:
-                            logger.warning(f"[Rocom Scraper] 提取单个商品失败: {e}")
-                            continue
-                            
-                except Exception as e:
-                    logger.warning(f"[Rocom Scraper] 处理时间段 {i+1} 失败: {e}")
-                    continue
-            
-            logger.info(f"[Rocom Scraper] 成功提取 {len(all_goods)} 个有效商品")
-            
+            logger.info("[Rocom Scraper] 请求远行商人 API")
+            await self._ensure_client()
+            resp = await self._client.post(
+                _BASE_URL, params={"path": "lkyxGood/index", "tool_id": _TOOL_ID}
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            if not data.get("success"):
+                logger.warning(f"[Rocom Scraper] 商人 API 返回失败: {data.get('msg')}")
+                return None
+
+            all_goods = self._parse_merchant_list(data.get("list") or [])
+            logger.info(f"[Rocom Scraper] 成功获取 {len(all_goods)} 个商品")
             return {
                 "merchantActivities": [{
                     "name": "远行商人",
                     "get_props": all_goods,
                     "get_extra_props": [],
-                    "get_pets": []
+                    "get_pets": [],
                 }],
-                "random_goods": []
+                "random_goods": [],
             }
-            
-        except PlaywrightTimeout as e:
-            logger.error(f"[Rocom Scraper] 页面加载超时: {e}")
-            return None
         except Exception as e:
-            logger.error(f"[Rocom Scraper] 爬取商人信息失败: {e}")
+            logger.error(f"[Rocom Scraper] 获取商人信息失败: {e}")
             return None
-        finally:
-            if page:
-                await page.close()
-    
-    async def get_activities_info(self) -> Optional[Dict]:
-        """爬取活动日历信息"""
-        page = None
+
+    def _parse_merchant_list(self, batch_list: List[Dict]) -> List[Dict]:
+        """解析 API 返回的商品批次列表"""
+        all_goods: List[Dict] = []
+        for batch_obj in batch_list:
+            items = batch_obj.get("items") or []
+            for item in items:
+                parsed = self._parse_merchant_item(item)
+                if parsed:
+                    all_goods.append(parsed)
+        return all_goods
+
+    def _parse_merchant_item(self, item: Dict) -> Optional[Dict]:
+        """将单个 API 商品条目转换为插件内部格式"""
+        name = (item.get("name") or "").strip()
+        if not name:
+            return None
+
+        start_ms = self._datetime_str_to_ms(item.get("stime"))
+        end_ms = self._datetime_str_to_ms(item.get("etime"))
+
+        # 判断当前是否在有效期内
+        now_ms = int(datetime.now(_CN_TZ).timestamp() * 1000)
+        is_active = True
+        if start_ms is not None and end_ms is not None:
+            is_active = start_ms <= now_ms < end_ms
+
+        price_raw = item.get("price") or "0"
         try:
-            logger.info("[Rocom Scraper] 开始爬取活动日历")
-            await self._ensure_browser()
-            page = await self._context.new_page()
-            
-            logger.info(f"[Rocom Scraper] 正在访问: {self.url}")
-            await page.goto(self.url, wait_until="networkidle", timeout=30000)
-            await page.wait_for_timeout(3000)
-            logger.info("[Rocom Scraper] 页面加载完成")
-            
-            tab2 = await page.query_selector('.tab-item.tab-2')
-            if tab2:
-                logger.info("[Rocom Scraper] 切换到活动标签页")
-                await tab2.click()
-                await page.wait_for_timeout(3000)
-            else:
-                logger.warning("[Rocom Scraper] 未找到活动标签页")
-            
-            activity_cards = await page.query_selector_all('.hd-card')
-            logger.info(f"[Rocom Scraper] 找到 {len(activity_cards)} 个活动卡片")
-            
-            activities = []
-            for i, card in enumerate(activity_cards):
-                try:
-                    title_elem = await card.query_selector('.hd-card__title-text')
-                    if not title_elem:
-                        logger.debug(f"[Rocom Scraper] 卡片 #{i}: 没有 .hd-card__title-text 元素，跳过")
-                        continue
-                    name = (await title_elem.text_content() or "").strip()
-                    if not name:
-                        logger.debug(f"[Rocom Scraper] 卡片 #{i}: 标题为空，跳过")
-                        continue
-                    
-                    full_text = (await card.text_content() or "").strip()
-                    # 打印原始文本的前 200 字符，帮助诊断
-                    text_preview = full_text[:200].replace('\n', '\\n')
-                    logger.info(f"[Rocom Scraper] 卡片 #{i} [{name}]: {text_preview}")
-                    
-                    import re
-                    from datetime import datetime
-                    
-                    # 尝试多种正则匹配日期格式
-                    # 模式1: 完整格式 1月1日~2月15日
-                    # 模式2: 简写格式 1月1日~15日 (省略月份)
-                    # 模式3: 月份前可能有年份 2025年1月1日~2025年2月15日
-                    date_match = re.search(
-                        r'活动时间[：:]\s*(\d+月\d+日.*?~.*?(?:\d+月)?\d+日.*?)(?:\n|活动相关|$)',
-                        full_text
-                    )
-                    date_range = date_match.group(1).strip() if date_match else ""
-                    
-                    if not date_range:
-                        logger.warning(f"[Rocom Scraper] 卡片 #{i} [{name}] 日期正则未匹配，全文: {full_text[:300]}")
-                        continue
-                    
-                    logger.info(f"[Rocom Scraper] 卡片 #{i} [{name}] 提取到日期范围: {date_range}")
-                    
-                    start_date, end_date = None, None
-                    parts = date_range.split('~')
-                    if len(parts) != 2:
-                        logger.warning(f"[Rocom Scraper] 卡片 #{i} [{name}] 无法按~分割: {date_range}")
-                        continue
-                    
-                    start_str = parts[0].strip()
-                    end_str = parts[1].strip()
-                    
-                    year = datetime.now().year
-                    try:
-                        # 解析开始日期（必须带月份）
-                        start_match = re.match(r'(\d+)月(\d+)日(?:\s+(\d+):(\d+))?', start_str)
-                        if not start_match:
-                            logger.warning(f"[Rocom Scraper] 卡片 #{i} [{name}] 无法解析开始日期: '{start_str}'")
-                            continue
-                        start_month = int(start_match.group(1))
-                        start_day = int(start_match.group(2))
-                        start_hour = int(start_match.group(3)) if start_match.group(3) else 4
-                        start_minute = int(start_match.group(4)) if start_match.group(4) else 0
-                        start_date = datetime(year, start_month, start_day, start_hour, start_minute)
-                        start_date = int(start_date.timestamp())
-                        
-                        # 解析结束日期（可能省略月份，此时沿用 start_month）
-                        end_match = re.match(r'(?:(\d+)月)?(\d+)日(?:\s+(\d+):(\d+))?', end_str)
-                        if not end_match:
-                            logger.warning(f"[Rocom Scraper] 卡片 #{i} [{name}] 无法解析结束日期: '{end_str}'")
-                            continue
-                        end_month = int(end_match.group(1)) if end_match.group(1) else start_month
-                        end_day = int(end_match.group(2))
-                        end_hour = int(end_match.group(3)) if end_match.group(3) else 4
-                        end_minute = int(end_match.group(4)) if end_match.group(4) else 0
-                        # 跨年处理：如果结束月份 < 开始月份，说明跨年了
-                        if end_month < start_month:
-                            end_date = datetime(year + 1, end_month, end_day, end_hour, end_minute)
-                        else:
-                            end_date = datetime(year, end_month, end_day, end_hour, end_minute)
-                        end_date = int(end_date.timestamp())
-                    except Exception as e:
-                        logger.warning(f"[Rocom Scraper] 卡片 #{i} [{name}] 日期解析异常: {e}, start_str={start_str}, end_str={end_str}")
-                        continue
-                    
-                    if not start_date or not end_date:
-                        continue
-                    
-                    rewards = ""
-                    reward_match = re.search(r'活动相关[：:]\s*(.+?)(?:\n|$)', full_text)
-                    if reward_match:
-                        rewards = reward_match.group(1).strip()
-                    
-                    activity = {
-                        'name': name,
-                        'start_time': start_date,
-                        'end_time': end_date,
-                        'start_date': date_range.split('~')[0].strip() if '~' in date_range else '',
-                        'end_date': date_range.split('~')[1].strip() if '~' in date_range else '',
-                        'rewards': rewards
-                    }
-                    
-                    logger.info(f"[Rocom Scraper] 卡片 #{i} [{name}] 解析成功: {activity['start_date']} -> {activity['end_date']}")
-                    activities.append(activity)
-                except Exception as e:
-                    logger.warning(f"[Rocom Scraper] 卡片 #{i} 提取异常: {e}")
-                    continue
-            
-            logger.info(f"[Rocom Scraper] 成功提取 {len(activities)} 个有效活动 / 共 {len(activity_cards)} 个卡片")
-            return {'activities': activities}
-            
-        except PlaywrightTimeout as e:
-            logger.error(f"[Rocom Scraper] 页面加载超时: {e}")
-            return None
+            price = int(price_raw)
+        except (ValueError, TypeError):
+            price = 0
+
+        limit_raw = item.get("buy_limit") or "0"
+        try:
+            limit = int(limit_raw)
+        except (ValueError, TypeError):
+            limit = 0
+
+        return {
+            "name": name,
+            "price": price,
+            "limit": limit,
+            "buy_limit_num": limit,
+            "is_active": is_active,
+            "is_rare": str(item.get("is_worth")) == "1",
+            "icon_url": item.get("image") or "",
+            "start_time": start_ms,
+            "end_time": end_ms,
+        }
+
+    # ── 活动日历 ─────────────────────────────────────────────
+
+    async def get_activities_info(self) -> Optional[Dict]:
+        """查询活动日历列表"""
+        try:
+            logger.info("[Rocom Scraper] 请求活动日历 API")
+            await self._ensure_client()
+            resp = await self._client.post(
+                _BASE_URL, params={"path": "lkyxAct/index", "tool_id": _TOOL_ID}
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            if not data.get("success"):
+                logger.warning(f"[Rocom Scraper] 活动 API 返回失败: {data.get('msg')}")
+                return None
+
+            activities = self._parse_activity_list(data.get("list") or [])
+            logger.info(f"[Rocom Scraper] 成功获取 {len(activities)} 个活动")
+            return {"activities": activities}
         except Exception as e:
-            logger.error(f"[Rocom Scraper] 爬取活动信息失败: {e}")
+            logger.error(f"[Rocom Scraper] 获取活动信息失败: {e}")
             return None
-        finally:
-            if page:
-                await page.close()
+
+    def _parse_activity_list(self, raw_list: List[Dict]) -> List[Dict]:
+        """解析活动列表"""
+        activities: List[Dict] = []
+        for item in raw_list:
+            parsed = self._parse_activity_item(item)
+            if parsed:
+                activities.append(parsed)
+        return activities
+
+    def _parse_activity_item(self, item: Dict) -> Optional[Dict]:
+        """将单个 API 活动条目转换为插件内部格式"""
+        name = (item.get("name") or "").strip()
+        if not name:
+            return None
+
+        start_ts = self._datetime_str_to_ts(item.get("stime"))
+        end_ts = self._datetime_str_to_ts(item.get("etime"))
+        if not start_ts and not end_ts:
+            return None
+
+        # 构建日期显示文本
+        start_date = self._format_date_text(item.get("stime"))
+        end_date = self._format_date_text(item.get("etime"))
+
+        # 提取奖励文本
+        prizes = item.get("prizes") or []
+        reward_names = [p.get("name") for p in prizes if isinstance(p, dict) and p.get("name")]
+        rewards = "、".join(reward_names[:6]) if reward_names else ""
+
+        return {
+            "name": name,
+            "start_time": start_ts,
+            "end_time": end_ts,
+            "start_date": start_date,
+            "end_date": end_date,
+            "rewards": rewards,
+        }
+
+    # ── 工具方法 ─────────────────────────────────────────────
+
+    @staticmethod
+    def _datetime_str_to_ms(value: Optional[str]) -> Optional[int]:
+        """将 '2026-07-05 08:00:00' 格式的时间字符串转换为毫秒时间戳"""
+        if not value:
+            return None
+        try:
+            dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=_CN_TZ)
+            return int(dt.timestamp() * 1000)
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _datetime_str_to_ts(value: Optional[str]) -> Optional[int]:
+        """将时间字符串转换为秒级时间戳"""
+        if not value:
+            return None
+        try:
+            dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=_CN_TZ)
+            return int(dt.timestamp())
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _format_date_text(value: Optional[str]) -> str:
+        """将 '2026-07-05 08:00:00' 转为 '7月5日' 格式"""
+        if not value:
+            return ""
+        try:
+            dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+            return f"{dt.month}月{dt.day}日"
+        except (ValueError, TypeError):
+            return ""
