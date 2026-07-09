@@ -71,17 +71,22 @@ class RocomScraper:
             return None
 
     def _parse_merchant_list(self, batch_list: List[Dict]) -> List[Dict]:
-        """解析 API 返回的商品批次列表，按 dict_id 去重"""
+        """解析 API 返回的商品批次列表，按 (dict_id, stime, etime) 去重
+
+        全天商品（时间段 08:00~23:59）会在每个 batch 中以相同的时间段重复出现，
+        需要去重；而分时段出现的同名商品（如 8~12 点、20~24 点各出现一次）时间段
+        不同，应当各自保留。因此用「商品 + 时间段」组合作为去重键，而非仅看商品名。
+        """
         all_goods: List[Dict] = []
-        seen_ids: set = set()
+        seen_keys: set = set()
         for batch_obj in batch_list:
             items = batch_obj.get("items") or []
             for item in items:
-                # 用 dict_id 去重（全天商品会在每个 batch 中重复出现）
                 dict_id = item.get("dict_id") or item.get("id") or item.get("name")
-                if dict_id in seen_ids:
+                key = (dict_id, item.get("stime"), item.get("etime"))
+                if key in seen_keys:
                     continue
-                seen_ids.add(dict_id)
+                seen_keys.add(key)
                 parsed = self._parse_merchant_item(item)
                 if parsed:
                     all_goods.append(parsed)
